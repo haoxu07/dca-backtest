@@ -94,24 +94,32 @@
 
 <script>
 // ── Service Worker proxy ─────────────────────────────────────────
-// The SW (sw.js) intercepts /api/yahoo/*, fetches from Yahoo,
-// and adds CORS headers — all in-browser, zero backend.
+// The SW intercepts ./yahoo/*, fetches from query2.finance.yahoo.com,
+// and adds CORS headers — in-browser, zero backend.
 let swReady = false;
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js', { scope: '/' }).then(() => {
-    // Poll until the SW takes control
-    const check = setInterval(() => {
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    // Wait for the SW to claim this page
+    const poll = () => {
       if (navigator.serviceWorker.controller) {
         swReady = true;
         document.getElementById('swStatus').textContent = 'Ready';
-        clearInterval(check);
+        return;
       }
-    }, 200);
-    // Timeout after 5s
-    setTimeout(() => { clearInterval(check); }, 5000);
+      // If there's an installing/activating worker, wait for it
+      const sw = reg.installing || reg.waiting;
+      if (sw) {
+        sw.onstatechange = () => { if (sw.state === 'activated') poll(); };
+        if (sw.state === 'activated') poll();
+      }
+    };
+    poll();
+    // Fallback: check again after a brief delay for claim() to take effect
+    setTimeout(poll, 1000);
+    setTimeout(poll, 3000);
   }).catch(e => {
     document.getElementById('swStatus').textContent =
-      'Requires localhost or HTTPS to work. (SW error: ' + e.message + ')';
+      'SW error: ' + e.message + '. Try refreshing the page.';
   });
 } else {
   document.getElementById('swStatus').textContent = 'Browser does not support Service Workers.';
@@ -159,24 +167,18 @@ async function run() {
   let data;
   let lastErr;
 
-  // Strategy 1: via Service Worker proxy (works on localhost + HTTPS)
-  if (swReady) {
-    try {
-      const res = await fetch(`/api/yahoo/v8/finance/chart/${symbol}?${params}`);
-      if (res.ok) { data = await res.json(); }
-    } catch (e) { lastErr = e; }
+  // Fetch via Service Worker proxy (sw.js intercepts api/yahoo/*)
+  if (!swReady) {
+    showErr('Service Worker not ready yet. Please refresh the page and try again.');
+    btn.disabled = false;
+    return;
   }
-
-  // Strategy 2: direct Yahoo (might work from some browsers)
-  if (!data) {
-    try {
-      const res = await fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${symbol}?${params}`);
-      if (res.ok) { data = await res.json(); }
-    } catch (e) { lastErr = e; }
-  }
-
-  if (!data) {
-    showErr(`Cannot fetch data. The Service Worker-based proxy may need a page refresh. ${lastErr?.message || ''}`);
+  try {
+    const res = await fetch(`api/yahoo/v8/finance/chart/${symbol}?${params}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (e) {
+    showErr(`Failed to fetch "${symbol}". Check the symbol or try refreshing the page. (${e.message})`);
     btn.disabled = false;
     return;
   }
